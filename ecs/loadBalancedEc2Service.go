@@ -10,6 +10,7 @@ import (
 	iam "github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	cloudwatchlogs "github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	s3 "github.com/aws/aws-cdk-go/awscdk/v2/awss3"
+	servicediscovery "github.com/aws/aws-cdk-go/awscdk/v2/awsservicediscovery"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 )
@@ -19,8 +20,10 @@ type LoadBalancedEc2ServiceProps struct {
 	LogGroupName               string
 	TaskDefinition             TaskDefinition
 	DesiredTaskCount           float64
-	CapacityProviderStrategies []ecs.CapacityProviderStrategy
+	CapacityProviderStrategies []string
 	ServiceHealthPercent       ServiceHealthPercent
+	IsServiceDiscoveryEnabled  bool
+	ServiceDiscovery           ServiceDiscoveryOptions
 }
 
 type ClusterProps struct {
@@ -84,6 +87,12 @@ type Volume struct {
 type ServiceHealthPercent struct {
 }
 
+type ServiceDiscoveryOptions struct {
+	NamespaceName string
+	NamespaceId   string
+	NamespaceArn  string
+}
+
 type loadBalancedEc2Service struct {
 	constructs.Construct
 	ec2Service ecs.Ec2Service
@@ -105,11 +114,32 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		createTaskContainerDefaultXrayPolciyStatement(),
 	)
 
+	// vpc := lookupVpc(this, id, &props.Cluster.Vpc)
 	logGroup := cloudwatchlogs.LogGroup_FromLogGroupName(this, jsii.String("LogGroup"), jsii.String(props.LogGroupName))
 
 	var networkMode ecs.NetworkMode = DEFAULT_TASK_DEFINITION_NETWORK_MODE
+	// var securityGroups []ec2.SecurityGroup = []ec2.SecurityGroup{}
 	if props.TaskDefinition.NetworkMode == TASK_DEFINTION_NETWORK_MODE_AWS_VPC {
 		networkMode = ecs.NetworkMode_AWS_VPC
+		// var sg ec2.SecurityGroup = ec2.NewSecurityGroup(
+		// 	this, jsii.String("SecurityGroup"), &ec2.SecurityGroupProps{
+		// 		Vpc:              vpc,
+		// 		AllowAllOutbound: jsii.Bool(true),
+		// 	},
+		// )
+		// for _, containerDef := range props.TaskDefinition.ApplicationContainers {
+
+		// 	for _, pm := range containerDef.PortMappings {
+		// 		sg.AddIngressRule(
+		// 			ec2.Peer_AnyIpv4(),
+		// 			ec2.Port_Tcp(jsii.Number(*pm.HostPort)),
+		// 			jsii.String(""),
+		// 			jsii.Bool(false),
+		// 		)
+		// 	}
+
+		// }
+		// securityGroups = append(securityGroups, sg)
 	} else if props.TaskDefinition.NetworkMode == TASK_DEFINTION_NETWORK_MODE_BRIDGE {
 		networkMode = ecs.NetworkMode_BRIDGE
 	}
@@ -194,26 +224,43 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		cd.AddMountPoints(convertContainerVolumeMountPoints(containerDef.VolumeMountPoint)...)
 	}
 
+	var cmOpts ecs.CloudMapOptions
+
+	if props.IsServiceDiscoveryEnabled {
+		cmOpts = ecs.CloudMapOptions{
+			DnsTtl:            awscdk.Duration_Minutes(jsii.Number(1)),
+			DnsRecordType:     servicediscovery.DnsRecordType_A,
+			CloudMapNamespace: getCloudMapNamespaceService(this, props.ServiceDiscovery),
+		}
+	}
+
+	var capacityProviderStrategies []*ecs.CapacityProviderStrategy = []*ecs.CapacityProviderStrategy{}
+	for _, cps := range props.CapacityProviderStrategies {
+		// capacityProviderStrategy := ecs.CapacityProviderStrategy{
+		// 	CapacityProvider: jsii.String(cps),
+		// 	Weight:           jsii.Number(1),
+		// }
+		capacityProviderStrategy := createServiceCapacityProviderStrategy(cps)
+		capacityProviderStrategies = append(capacityProviderStrategies, &capacityProviderStrategy)
+	}
+
 	ec2Service := ecs.NewEc2Service(this, jsii.String("Ec2Service"), &ecs.Ec2ServiceProps{
 		Cluster: ecs.Cluster_FromClusterAttributes(this, jsii.String("Cluster"), &ecs.ClusterAttributes{
 			ClusterName:    jsii.String(props.Cluster.ClusterName),
 			Vpc:            lookupVpc(this, id, &props.Cluster.Vpc),
 			SecurityGroups: &props.Cluster.Vpc.SecurityGroups,
 		}),
-		// CapacityProviderStrategies: &[]*ecs.CapacityProviderStrategy{
-		// 	&ecs.CapacityProviderStrategy{
-		// 		CapacityProvider: jsii.String(""),
-		// 		Weight:           jsii.Number(1),
-		// 	},
-		// },
-		TaskDefinition: taskDef,
-		DesiredCount:   &props.DesiredTaskCount,
+		CapacityProviderStrategies: &capacityProviderStrategies,
+		TaskDefinition:             taskDef,
+		DesiredCount:               &props.DesiredTaskCount,
 		CircuitBreaker: &ecs.DeploymentCircuitBreaker{
 			Rollback: jsii.Bool(true),
 		},
 		PlacementStrategies: &[]ecs.PlacementStrategy{
 			ecs.PlacementStrategy_PackedByMemory(),
 		},
+		CloudMapOptions: &cmOpts,
+		// SecurityGroups:  securityGroups,
 	})
 
 	return &loadBalancedEc2Service{this, ec2Service}
@@ -297,6 +344,15 @@ func lookupVpc(scope constructs.Construct, id *string, props *VpcProps) ec2.IVpc
 	return vpc
 }
 
+func createServiceCapacityProviderStrategy(name string) ecs.CapacityProviderStrategy {
+	capacityProviderStrategy := ecs.CapacityProviderStrategy{
+		CapacityProvider: jsii.String(name),
+		Weight:           jsii.Number(1),
+	}
+
+	return capacityProviderStrategy
+}
+
 func createEnvironmentFileObjectReadOnlyAccessPolicyStatement(bucket string, key string) iam.PolicyStatement {
 
 	policy := iam.NewPolicyStatement(
@@ -355,4 +411,15 @@ func createTaskContainerDefaultXrayPolciyStatement() iam.PolicyStatement {
 	})
 
 	return policy
+}
+
+func getCloudMapNamespaceService(scope constructs.Construct, sd ServiceDiscoveryOptions) servicediscovery.IPrivateDnsNamespace {
+	privateNamespace := servicediscovery.PrivateDnsNamespace_FromPrivateDnsNamespaceAttributes(
+		scope, jsii.String("CloudMapNamespace"), &servicediscovery.PrivateDnsNamespaceAttributes{
+			NamespaceArn:  jsii.String(sd.NamespaceArn),
+			NamespaceId:   jsii.String(sd.NamespaceId),
+			NamespaceName: jsii.String(sd.NamespaceName),
+		},
+	)
+	return privateNamespace
 }
