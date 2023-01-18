@@ -7,6 +7,7 @@ import (
 	ec2 "github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	ecr "github.com/aws/aws-cdk-go/awscdk/v2/awsecr"
 	ecs "github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
+	elb2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	iam "github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	cloudwatchlogs "github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	s3 "github.com/aws/aws-cdk-go/awscdk/v2/awss3"
@@ -16,14 +17,21 @@ import (
 )
 
 type LoadBalancedEc2ServiceProps struct {
-	Cluster                    ClusterProps
-	LogGroupName               string
-	TaskDefinition             TaskDefinition
-	DesiredTaskCount           float64
-	CapacityProviderStrategies []string
-	ServiceHealthPercent       ServiceHealthPercent
-	IsServiceDiscoveryEnabled  bool
-	ServiceDiscovery           ServiceDiscoveryOptions
+	Cluster                       ClusterProps
+	LogGroupName                  string
+	TaskDefinition                TaskDefinition
+	EnableTracing                 bool
+	DesiredTaskCount              float64
+	CapacityProviderStrategies    []string
+	ServiceHealthPercent          ServiceHealthPercent
+	IsServiceDiscoveryEnabled     bool
+	ServiceDiscovery              ServiceDiscoveryOptions
+	LoadBalancerTargetOptions     []LoadBalancerTargetOptions
+	RoutePriority                 float64
+	RoutePath                     string
+	Host                          string
+	LoadBalancerListenerArn       string
+	LoadBalancerSecurityGroupName string
 }
 
 type ClusterProps struct {
@@ -49,9 +57,11 @@ type TaskDefinition struct {
 	Volumes               []Volume
 }
 
-type Networkmode string
-
-type RegistryType string
+type (
+	Networkmode                string
+	RegistryType               string
+	LoadBalancerTargetProtocol string
+)
 
 const (
 	TASK_DEFINTION_NETWORK_MODE_BRIDGE    Networkmode                  = "BRIDGE"
@@ -62,6 +72,10 @@ const (
 	DEFAULT_LOG_RETENTION                 cloudwatchlogs.RetentionDays = cloudwatchlogs.RetentionDays_TWO_WEEKS
 	DEFAULT_DOCKER_VOLUME_DRIVER          string                       = "rexray/ebs"
 	DEFAULT_DOCKER_VOLUME_TYPE            string                       = "gp2"
+	LOAD_BALANCER_TARGET_PROTOCOL_TCP     string                       = "TCP"
+	LOAD_BALANCER_TARGET_PROTOCOL_UDP     string                       = "UDP"
+	DEFAULT_LOAD_BALANCER_TARGET_PROTOCOL ecs.Protocol                 = ecs.Protocol_TCP
+	OTEL_CONTAINER_IMAGE                  string                       = "amazon/aws-otel-collector:v0.25.0"
 )
 
 type ContainerDefinition struct {
@@ -93,6 +107,12 @@ type ServiceDiscoveryOptions struct {
 	NamespaceArn  string
 }
 
+type LoadBalancerTargetOptions struct {
+	ContainerName string
+	Port          float64
+	Protocol      string
+}
+
 type loadBalancedEc2Service struct {
 	constructs.Construct
 	ec2Service ecs.Ec2Service
@@ -114,34 +134,14 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		createTaskContainerDefaultXrayPolciyStatement(),
 	)
 
-	// vpc := lookupVpc(this, id, &props.Cluster.Vpc)
-	logGroup := cloudwatchlogs.LogGroup_FromLogGroupName(this, jsii.String("LogGroup"), jsii.String(props.LogGroupName))
-
 	var networkMode ecs.NetworkMode = DEFAULT_TASK_DEFINITION_NETWORK_MODE
-	// var securityGroups []ec2.SecurityGroup = []ec2.SecurityGroup{}
+	var loadBalancedServiceTargetType elb2.TargetType = elb2.TargetType_IP
 	if props.TaskDefinition.NetworkMode == TASK_DEFINTION_NETWORK_MODE_AWS_VPC {
 		networkMode = ecs.NetworkMode_AWS_VPC
-		// var sg ec2.SecurityGroup = ec2.NewSecurityGroup(
-		// 	this, jsii.String("SecurityGroup"), &ec2.SecurityGroupProps{
-		// 		Vpc:              vpc,
-		// 		AllowAllOutbound: jsii.Bool(true),
-		// 	},
-		// )
-		// for _, containerDef := range props.TaskDefinition.ApplicationContainers {
-
-		// 	for _, pm := range containerDef.PortMappings {
-		// 		sg.AddIngressRule(
-		// 			ec2.Peer_AnyIpv4(),
-		// 			ec2.Port_Tcp(jsii.Number(*pm.HostPort)),
-		// 			jsii.String(""),
-		// 			jsii.Bool(false),
-		// 		)
-		// 	}
-
-		// }
-		// securityGroups = append(securityGroups, sg)
+		loadBalancedServiceTargetType = elb2.TargetType_IP
 	} else if props.TaskDefinition.NetworkMode == TASK_DEFINTION_NETWORK_MODE_BRIDGE {
 		networkMode = ecs.NetworkMode_BRIDGE
+		loadBalancedServiceTargetType = elb2.TargetType_INSTANCE
 	}
 
 	taskDef := ecs.NewTaskDefinition(this, jsii.String("Ec2TaskDefinition"), &ecs.TaskDefinitionProps{
@@ -157,8 +157,6 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 					&iam.PolicyDocumentProps{
 						AssignSids: jsii.Bool(true),
 						Statements: &[]iam.PolicyStatement{
-							// createEnvironmentFileBucketReadOnlyAccessPolicyStatement(props.TaskDefinition.EnvironmentFileBucket),
-							// createEcrContainerRegistryReadonlyAccessPolicyStatement(ecrRepositories),
 							iam.NewPolicyStatement(
 								&iam.PolicyStatementProps{
 									Actions: &[]*string{
@@ -201,6 +199,8 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		}
 	}
 
+	logGroup := cloudwatchlogs.LogGroup_FromLogGroupName(this, jsii.String("LogGroup"), jsii.String(props.LogGroupName))
+
 	for index, containerDef := range props.TaskDefinition.ApplicationContainers {
 		// update task definition with statements providing container the acces to specific environment files in th S3 bucket
 		taskDef.AddToExecutionRolePolicy(
@@ -224,7 +224,38 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		cd.AddMountPoints(convertContainerVolumeMountPoints(containerDef.VolumeMountPoint)...)
 	}
 
-	var cmOpts ecs.CloudMapOptions
+	if props.EnableTracing {
+		ecs.NewContainerDefinition(scope, jsii.String("OtelContainerDefinition"), &ecs.ContainerDefinitionProps{
+			TaskDefinition: taskDef,
+			ContainerName:  jsii.String("Otel"),
+			Image:          ecs.ContainerImage_FromRegistry(jsii.String(OTEL_CONTAINER_IMAGE), &ecs.RepositoryImageProps{}),
+			Cpu:            jsii.Number(256),
+			MemoryLimitMiB: jsii.Number(512),
+			Logging:        setupContianerAwsLogDriver(logGroup, "Otel"),
+			Command: &[]*string{
+				jsii.String("--config=/etc/ecs/ecs-default-config.yaml"),
+			},
+			PortMappings: &[]*ecs.PortMapping{
+				{
+					ContainerPort: jsii.Number(2000),
+					HostPort:      jsii.Number(2000),
+					Protocol:      ecs.Protocol_UDP,
+				},
+				{
+					ContainerPort: jsii.Number(4317),
+					HostPort:      jsii.Number(4317),
+					Protocol:      ecs.Protocol_TCP,
+				},
+				{
+					ContainerPort: jsii.Number(8125),
+					HostPort:      jsii.Number(8125),
+					Protocol:      ecs.Protocol_UDP,
+				},
+			},
+		})
+	}
+
+	var cmOpts ecs.CloudMapOptions = ecs.CloudMapOptions{}
 
 	if props.IsServiceDiscoveryEnabled {
 		cmOpts = ecs.CloudMapOptions{
@@ -236,18 +267,15 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 
 	var capacityProviderStrategies []*ecs.CapacityProviderStrategy = []*ecs.CapacityProviderStrategy{}
 	for _, cps := range props.CapacityProviderStrategies {
-		// capacityProviderStrategy := ecs.CapacityProviderStrategy{
-		// 	CapacityProvider: jsii.String(cps),
-		// 	Weight:           jsii.Number(1),
-		// }
 		capacityProviderStrategy := createServiceCapacityProviderStrategy(cps)
 		capacityProviderStrategies = append(capacityProviderStrategies, &capacityProviderStrategy)
 	}
 
+	vpc := lookupVpc(this, id, &props.Cluster.Vpc)
 	ec2Service := ecs.NewEc2Service(this, jsii.String("Ec2Service"), &ecs.Ec2ServiceProps{
 		Cluster: ecs.Cluster_FromClusterAttributes(this, jsii.String("Cluster"), &ecs.ClusterAttributes{
 			ClusterName:    jsii.String(props.Cluster.ClusterName),
-			Vpc:            lookupVpc(this, id, &props.Cluster.Vpc),
+			Vpc:            vpc,
 			SecurityGroups: &props.Cluster.Vpc.SecurityGroups,
 		}),
 		CapacityProviderStrategies: &capacityProviderStrategies,
@@ -259,8 +287,65 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		PlacementStrategies: &[]ecs.PlacementStrategy{
 			ecs.PlacementStrategy_PackedByMemory(),
 		},
-		CloudMapOptions: &cmOpts,
-		// SecurityGroups:  securityGroups,
+		CloudMapOptions:      &cmOpts,
+		PropagateTags:        ecs.PropagatedTagSource_SERVICE,
+		EnableECSManagedTags: jsii.Bool(true),
+	})
+
+	var serviceTargets []elb2.IApplicationLoadBalancerTarget = []elb2.IApplicationLoadBalancerTarget{}
+
+	for _, t := range props.LoadBalancerTargetOptions {
+
+		var protocol ecs.Protocol = DEFAULT_LOAD_BALANCER_TARGET_PROTOCOL
+
+		if t.Protocol == LOAD_BALANCER_TARGET_PROTOCOL_TCP {
+			protocol = ecs.Protocol_TCP
+		} else {
+			protocol = ecs.Protocol_UDP
+		}
+
+		serviceTargets = append(serviceTargets, ec2Service.LoadBalancerTarget(
+			&ecs.LoadBalancerTargetOptions{
+				ContainerName: jsii.String(t.ContainerName),
+				ContainerPort: jsii.Number(t.Port),
+				Protocol:      protocol,
+			},
+		))
+		// serviceTargets = []elb2.IApplicationLoadBalancerTarget{
+		// 	ec2Service.LoadBalancerTarget(
+		// 		&ecs.LoadBalancerTargetOptions{
+		// 			ContainerName: jsii.String(t.ContainerName),
+		// 			ContainerPort: jsii.Number(t.Port),
+		// 			Protocol:      protocol,
+		// 		},
+		// 	),
+		// }
+	}
+
+	appTg := elb2.NewApplicationTargetGroup(this, jsii.String("ApplicationTargetGroup"), &elb2.ApplicationTargetGroupProps{
+		HealthCheck: &elb2.HealthCheck{
+			Enabled:          jsii.Bool(true),
+			HealthyHttpCodes: jsii.String("200"),
+			Path:             jsii.String("/"),
+			Interval:         awscdk.Duration_Seconds(jsii.Number(30)),
+		},
+		TargetType: loadBalancedServiceTargetType,
+		Vpc:        vpc,
+		Protocol:   elb2.ApplicationProtocol_HTTPS,
+		Targets:    &serviceTargets,
+	})
+
+	elb2.NewApplicationListenerRule(this, jsii.String("ALBListenerRule"), &elb2.ApplicationListenerRuleProps{
+		Priority: jsii.Number(props.RoutePriority),
+		Action:   elb2.ListenerAction_Forward(&[]elb2.IApplicationTargetGroup{appTg}, &elb2.ForwardOptions{}),
+		Conditions: &[]elb2.ListenerCondition{
+			elb2.ListenerCondition_HostHeaders(jsii.Strings(props.Host)),
+			elb2.ListenerCondition_PathPatterns(jsii.Strings(props.RoutePath)),
+		},
+		Listener: elb2.ApplicationListener_FromApplicationListenerAttributes(this, jsii.String("ALBListener"), &elb2.ApplicationListenerAttributes{
+			ListenerArn:   jsii.String(props.LoadBalancerListenerArn),
+			SecurityGroup: ec2.SecurityGroup_FromLookupById(this, jsii.String("ALBSecurityGroup"), jsii.String(props.LoadBalancerSecurityGroupName)),
+		}),
 	})
 
 	return &loadBalancedEc2Service{this, ec2Service}
@@ -371,30 +456,6 @@ func createEnvironmentFileObjectReadOnlyAccessPolicyStatement(bucket string, key
 
 	return policy
 }
-
-// func createEcrContainerRegistryReadonlyAccessPolicyStatement(registryNames []*string) iam.PolicyStatement {
-// 	policy := iam.NewPolicyStatement(
-// 		&iam.PolicyStatementProps{
-// 			Effect: iam.Effect_ALLOW,
-// 			Actions: &[]*string{
-// 				jsii.String("ecr:GetAuthorizationToken"),
-// 				jsii.String("ecr:BatchCheckLayerAvailability"),
-// 				jsii.String("ecr:GetDownloadUrlForLayer"),
-// 				jsii.String("ecr:GetRepositoryPolicy"),
-// 				jsii.String("ecr:DescribeRepositories"),
-// 				jsii.String("ecr:ListImages"),
-// 				jsii.String("ecr:DescribeImages"),
-// 				jsii.String("ecr:BatchGetImage"),
-// 				jsii.String("ecr:GetLifecyclePolicy"),
-// 				jsii.String("ecr:GetLifecyclePolicyPreview"),
-// 				jsii.String("ecr:ListTagsForResource"),
-// 				jsii.String("ecr:DescribeImageScanFindings"),
-// 			},
-// 			Resources: &registryNames,
-// 		},
-// 	)
-// 	return policy
-// }
 
 func createTaskContainerDefaultXrayPolciyStatement() iam.PolicyStatement {
 	policy := iam.NewPolicyStatement(&iam.PolicyStatementProps{
