@@ -115,15 +115,21 @@ type LoadBalancerTargetOptions struct {
 
 type loadBalancedEc2Service struct {
 	constructs.Construct
+	logGroup   cloudwatchlogs.LogGroup
 	ec2Service ecs.Ec2Service
 }
 
 type LoadBalancedEc2Service interface {
+	LogGroup() cloudwatchlogs.LogGroup
 	Service() ecs.Ec2Service
 }
 
 func (s *loadBalancedEc2Service) Service() ecs.Ec2Service {
 	return s.ec2Service
+}
+
+func (s *loadBalancedEc2Service) LogGroup() cloudwatchlogs.LogGroup {
+	return s.logGroup
 }
 
 func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *LoadBalancedEc2ServiceProps) LoadBalancedEc2Service {
@@ -199,7 +205,13 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		}
 	}
 
-	logGroup := cloudwatchlogs.LogGroup_FromLogGroupName(this, jsii.String("LogGroup"), jsii.String(props.LogGroupName))
+	// Creates a CloudWatch Log Group for each service
+	logGroup := cloudwatchlogs.NewLogGroup(this, jsii.String("LogGroup"), &cloudwatchlogs.LogGroupProps{
+		LogGroupName: jsii.String(props.LogGroupName),
+		Retention:    DEFAULT_LOG_RETENTION,
+	})
+
+	// logGroup := cloudwatchlogs.LogGroup_FromLogGroupName(this, jsii.String("LogGroup"), jsii.String(props.LogGroupName))
 
 	for index, containerDef := range props.TaskDefinition.ApplicationContainers {
 		// update task definition with statements providing container the acces to specific environment files in th S3 bucket
@@ -311,15 +323,6 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 				Protocol:      protocol,
 			},
 		))
-		// serviceTargets = []elb2.IApplicationLoadBalancerTarget{
-		// 	ec2Service.LoadBalancerTarget(
-		// 		&ecs.LoadBalancerTargetOptions{
-		// 			ContainerName: jsii.String(t.ContainerName),
-		// 			ContainerPort: jsii.Number(t.Port),
-		// 			Protocol:      protocol,
-		// 		},
-		// 	),
-		// }
 	}
 
 	appTg := elb2.NewApplicationTargetGroup(this, jsii.String("ApplicationTargetGroup"), &elb2.ApplicationTargetGroupProps{
@@ -348,7 +351,7 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		}),
 	})
 
-	return &loadBalancedEc2Service{this, ec2Service}
+	return &loadBalancedEc2Service{this, logGroup, ec2Service}
 }
 
 func configureContainerToTaskDefinition(scope constructs.Construct, id string, containerDef ContainerDefinition, taskDef ecs.TaskDefinition, taskDefEnvFileBucket s3.IBucket, logGroup cloudwatchlogs.ILogGroup) ecs.ContainerDefinition {
