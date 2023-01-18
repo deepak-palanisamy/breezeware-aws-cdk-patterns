@@ -359,8 +359,8 @@ func configureContainerToTaskDefinition(scope constructs.Construct, id string, c
 		EntryPoint:     convertContainerEntryPointCommands(containerDef.EntryPointCommands),
 		Essential:      jsii.Bool(containerDef.IsEssential),
 		Image:          configureContainerImage(scope, containerDef.RegistryType, containerDef.Image, containerDef.ImageTag),
-		Cpu:            &containerDef.Cpu,
-		MemoryLimitMiB: &containerDef.Memory,
+		Cpu:            jsii.Number(containerDef.Cpu),
+		MemoryLimitMiB: jsii.Number(containerDef.Memory),
 		EnvironmentFiles: &[]ecs.EnvironmentFile{
 			ecs.AssetEnvironmentFile_FromBucket(taskDefEnvFileBucket, jsii.String(containerDef.EnvironmentFileObjectKey), nil),
 		},
