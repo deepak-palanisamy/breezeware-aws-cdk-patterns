@@ -72,8 +72,8 @@ const (
 	DEFAULT_LOG_RETENTION                 cloudwatchlogs.RetentionDays = cloudwatchlogs.RetentionDays_TWO_WEEKS
 	DEFAULT_DOCKER_VOLUME_DRIVER          string                       = "rexray/ebs"
 	DEFAULT_DOCKER_VOLUME_TYPE            string                       = "gp2"
-	LOAD_BALANCER_TARGET_PROTOCOL_TCP     string                       = "TCP"
-	LOAD_BALANCER_TARGET_PROTOCOL_UDP     string                       = "UDP"
+	LOAD_BALANCER_TARGET_PROTOCOL_TCP     LoadBalancerTargetProtocol   = "TCP"
+	LOAD_BALANCER_TARGET_PROTOCOL_UDP     LoadBalancerTargetProtocol   = "UDP"
 	DEFAULT_LOAD_BALANCER_TARGET_PROTOCOL ecs.Protocol                 = ecs.Protocol_TCP
 	OTEL_CONTAINER_IMAGE                  string                       = "amazon/aws-otel-collector:v0.25.0"
 )
@@ -110,7 +110,7 @@ type ServiceDiscoveryOptions struct {
 type LoadBalancerTargetOptions struct {
 	ContainerName string
 	Port          float64
-	Protocol      string
+	Protocol      LoadBalancerTargetProtocol
 }
 
 type loadBalancedEc2Service struct {
