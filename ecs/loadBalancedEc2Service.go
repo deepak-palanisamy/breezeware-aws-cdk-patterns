@@ -429,7 +429,7 @@ func setupContianerAwsLogDriver(logGroup cloudwatchlogs.ILogGroup, prefix string
 	logDriver := ecs.AwsLogDriver_AwsLogs(&ecs.AwsLogDriverProps{
 		LogGroup:     logGroup,
 		StreamPrefix: jsii.String(prefix),
-		LogRetention: DEFAULT_LOG_RETENTION,
+		// LogRetention: DEFAULT_LOG_RETENTION,
 	})
 	return logDriver
 }
