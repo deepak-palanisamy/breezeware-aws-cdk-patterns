@@ -1,6 +1,7 @@
 package ecs
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
@@ -17,21 +18,22 @@ import (
 )
 
 type LoadBalancedEc2ServiceProps struct {
-	Cluster                       ClusterProps
-	LogGroupName                  string
-	TaskDefinition                TaskDefinition
-	EnableTracing                 bool
-	DesiredTaskCount              float64
-	CapacityProviderStrategies    []string
-	ServiceHealthPercent          ServiceHealthPercent
-	IsServiceDiscoveryEnabled     bool
-	ServiceDiscovery              ServiceDiscoveryOptions
-	LoadBalancerTargetOptions     []LoadBalancerTargetOptions
-	RoutePriority                 float64
-	RoutePath                     string
-	Host                          string
-	LoadBalancerListenerArn       string
-	LoadBalancerSecurityGroupName string
+	Cluster                     ClusterProps
+	LogGroupName                string
+	TaskDefinition              TaskDefinition
+	EnableTracing               bool
+	DesiredTaskCount            float64
+	CapacityProviderStrategies  []string
+	ServiceHealthPercent        ServiceHealthPercent
+	IsServiceDiscoveryEnabled   bool
+	ServiceDiscovery            ServiceDiscoveryOptions
+	LoadBalancerTargetOptions   []LoadBalancerTargetOptions
+	RoutePriority               float64
+	RoutePath                   string
+	RoutePort                   float64
+	Host                        string
+	LoadBalancerListenerArn     string
+	LoadBalancerSecurityGroupId string
 }
 
 type ClusterProps struct {
@@ -50,7 +52,7 @@ type TaskDefinition struct {
 	Cpu                   string
 	MemoryInMiB           string
 	NetworkMode           Networkmode
-	EnvironmentFileBucket string
+	EnvironmentFile       EnvironmentFile
 	TaskPolicy            iam.PolicyDocument
 	ApplicationContainers []ContainerDefinition
 	RequiresVolume        bool
@@ -62,6 +64,11 @@ type (
 	RegistryType               string
 	LoadBalancerTargetProtocol string
 )
+
+type EnvironmentFile struct {
+	BucketName string
+	BucketArn  string
+}
 
 const (
 	DEFAULT_LOG_RETENTION        cloudwatchlogs.RetentionDays = cloudwatchlogs.RetentionDays_TWO_WEEKS
@@ -152,6 +159,7 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 
 	var networkMode ecs.NetworkMode = DEFAULT_TASK_DEFINITION_NETWORK_MODE
 	var loadBalancedServiceTargetType elb2.TargetType = elb2.TargetType_IP
+	fmt.Println("loadBalancedServiceTargetType : ", loadBalancedServiceTargetType)
 	if props.TaskDefinition.NetworkMode == TASK_DEFINTION_NETWORK_MODE_AWS_VPC {
 		networkMode = ecs.NetworkMode_AWS_VPC
 		loadBalancedServiceTargetType = elb2.TargetType_IP
@@ -161,9 +169,9 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 	}
 
 	taskDef := ecs.NewTaskDefinition(this, jsii.String("Ec2TaskDefinition"), &ecs.TaskDefinitionProps{
-		Family:        jsii.String(props.TaskDefinition.FamilyName),
-		Cpu:           jsii.String(props.TaskDefinition.Cpu),
-		MemoryMiB:     jsii.String(props.TaskDefinition.MemoryInMiB),
+		Family: jsii.String(props.TaskDefinition.FamilyName),
+		// Cpu:           jsii.String(props.TaskDefinition.Cpu),
+		// MemoryMiB:     jsii.String(props.TaskDefinition.MemoryInMiB),
 		Compatibility: ecs.Compatibility_EC2,
 		NetworkMode:   networkMode,
 		ExecutionRole: iam.NewRole(this, jsii.String("ExecutionRole"), &iam.RoleProps{
@@ -180,7 +188,7 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 									},
 									Effect: iam.Effect_ALLOW,
 									Resources: &[]*string{
-										&props.TaskDefinition.EnvironmentFileBucket,
+										&props.TaskDefinition.EnvironmentFile.BucketArn,
 									},
 								},
 							),
@@ -220,14 +228,13 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		LogGroupName: jsii.String(props.LogGroupName),
 		Retention:    DEFAULT_LOG_RETENTION,
 	})
-
-	// logGroup := cloudwatchlogs.LogGroup_FromLogGroupName(this, jsii.String("LogGroup"), jsii.String(props.LogGroupName))
+	logGroup.ApplyRemovalPolicy(awscdk.RemovalPolicy_DESTROY)
 
 	for index, containerDef := range props.TaskDefinition.ApplicationContainers {
 		// update task definition with statements providing container the acces to specific environment files in th S3 bucket
 		taskDef.AddToExecutionRolePolicy(
 			createEnvironmentFileObjectReadOnlyAccessPolicyStatement(
-				props.TaskDefinition.EnvironmentFileBucket,
+				props.TaskDefinition.EnvironmentFile.BucketArn,
 				containerDef.EnvironmentFileObjectKey),
 		)
 		// creates container definition for the task definition
@@ -239,7 +246,7 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 			s3.Bucket_FromBucketName(
 				this,
 				jsii.String("EnvironmentFileBucket"),
-				jsii.String(props.TaskDefinition.EnvironmentFileBucket),
+				jsii.String(props.TaskDefinition.EnvironmentFile.BucketName),
 			),
 			logGroup,
 		)
@@ -284,7 +291,16 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 	}
 
 	vpc := lookupVpc(this, id, &props.Cluster.Vpc)
-	var cmOpts ecs.CloudMapOptions = ecs.CloudMapOptions{}
+	var cmOpts *ecs.CloudMapOptions = nil
+	if props.IsServiceDiscoveryEnabled {
+		// fmt.Println("Entering ServiceDiscovery configuration")
+		cmOpts = &ecs.CloudMapOptions{
+			DnsTtl:            awscdk.Duration_Minutes(jsii.Number(1)),
+			DnsRecordType:     servicediscovery.DnsRecordType_A,
+			ContainerPort:     jsii.Number(props.RoutePort),
+			CloudMapNamespace: getCloudMapNamespaceService(this, props.ServiceDiscovery),
+		}
+	}
 	ec2Service := ecs.NewEc2Service(this, jsii.String("Ec2Service"), &ecs.Ec2ServiceProps{
 		Cluster: ecs.Cluster_FromClusterAttributes(this, jsii.String("Cluster"), &ecs.ClusterAttributes{
 			ClusterName:    jsii.String(props.Cluster.ClusterName),
@@ -300,19 +316,10 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		PlacementStrategies: &[]ecs.PlacementStrategy{
 			ecs.PlacementStrategy_PackedByMemory(),
 		},
-		CloudMapOptions:      &cmOpts,
+		CloudMapOptions:      cmOpts,
 		PropagateTags:        ecs.PropagatedTagSource_SERVICE,
 		EnableECSManagedTags: jsii.Bool(true),
 	})
-
-	if props.IsServiceDiscoveryEnabled {
-		cmOpts = ecs.CloudMapOptions{
-			DnsTtl:            awscdk.Duration_Minutes(jsii.Number(1)),
-			DnsRecordType:     servicediscovery.DnsRecordType_A,
-			CloudMapNamespace: getCloudMapNamespaceService(this, props.ServiceDiscovery),
-		}
-		ec2Service.EnableCloudMap(&cmOpts)
-	}
 
 	var serviceTargets []elb2.IApplicationLoadBalancerTarget = []elb2.IApplicationLoadBalancerTarget{}
 
@@ -334,30 +341,72 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 			},
 		))
 	}
+	fmt.Println("Number of service targets: ", len(serviceTargets))
+	// fmt.Println("Service targets: ", serviceTargets)
 
-	appTg := elb2.NewApplicationTargetGroup(this, jsii.String("ApplicationTargetGroup"), &elb2.ApplicationTargetGroupProps{
+	// appTg := elb2.NewApplicationTargetGroup(this, jsii.String("ApplicationTargetGroup"), &elb2.ApplicationTargetGroupProps{
+	// 	HealthCheck: &elb2.HealthCheck{
+	// 		Enabled:          jsii.Bool(true),
+	// 		HealthyHttpCodes: jsii.String("200"),
+	// 		Path:             jsii.String("/"),
+	// 		Interval:         awscdk.Duration_Seconds(jsii.Number(30)),
+	// 	},
+	// 	TargetGroupName: jsii.String("LoadBalancedTg"),
+	// 	TargetType:      loadBalancedServiceTargetType,
+	// 	Vpc:             vpc,
+	// 	Protocol:        elb2.ApplicationProtocol_HTTP,
+	// 	Targets: &[]elb2.IApplicationLoadBalancerTarget{
+	// 		ec2Service.LoadBalancerTarget(&ecs.LoadBalancerTargetOptions{
+	// 			ContainerName: jsii.String("demo-app"),
+	// 			ContainerPort: jsii.Number(80),
+	// 			Protocol:      ecs.Protocol_TCP,
+	// 		}),
+	// 	},
+	// })
+
+	// elb2.NewApplicationListenerRule(this, jsii.String("ALBListenerRule"), &elb2.ApplicationListenerRuleProps{
+	// 	Priority: jsii.Number(props.RoutePriority),
+	// 	Action:   elb2.ListenerAction_Forward(&[]elb2.IApplicationTargetGroup{appTg}, &elb2.ForwardOptions{}),
+	// 	Conditions: &[]elb2.ListenerCondition{
+	// 		elb2.ListenerCondition_HostHeaders(&[]*string{jsii.String(props.Host)}),
+	// 		elb2.ListenerCondition_PathPatterns(&[]*string{jsii.String(props.RoutePath)}),
+	// 	},
+	// 	Listener: elb2.ApplicationListener_FromApplicationListenerAttributes(this, jsii.String("ALBListener"), &elb2.ApplicationListenerAttributes{
+	// 		ListenerArn:   jsii.String(props.LoadBalancerListenerArn),
+	// 		SecurityGroup: ec2.SecurityGroup_FromLookupById(this, jsii.String("ALBSecurityGroup"), jsii.String(props.LoadBalancerSecurityGroupId)),
+	// 	}),
+	// })
+
+	tg := elb2.NewApplicationTargetGroup(this, jsii.String("TargetGroup"), &elb2.ApplicationTargetGroupProps{
+		TargetGroupName: jsii.String("NginxTg"),
 		HealthCheck: &elb2.HealthCheck{
 			Enabled:          jsii.Bool(true),
 			HealthyHttpCodes: jsii.String("200"),
 			Path:             jsii.String("/"),
 			Interval:         awscdk.Duration_Seconds(jsii.Number(30)),
 		},
-		TargetType: loadBalancedServiceTargetType,
+		TargetType: elb2.TargetType_IP,
 		Vpc:        vpc,
-		Protocol:   elb2.ApplicationProtocol_HTTPS,
-		Targets:    &serviceTargets,
+		Protocol:   elb2.ApplicationProtocol_HTTP,
+		Targets: &[]elb2.IApplicationLoadBalancerTarget{
+			ec2Service.LoadBalancerTarget(&ecs.LoadBalancerTargetOptions{
+				ContainerName: jsii.String("demo-app"),
+				ContainerPort: jsii.Number(80),
+				Protocol:      ecs.Protocol_TCP,
+			}),
+		},
 	})
 
-	elb2.NewApplicationListenerRule(this, jsii.String("ALBListenerRule"), &elb2.ApplicationListenerRuleProps{
-		Priority: jsii.Number(props.RoutePriority),
-		Action:   elb2.ListenerAction_Forward(&[]elb2.IApplicationTargetGroup{appTg}, &elb2.ForwardOptions{}),
+	elb2.NewApplicationListenerRule(this, jsii.String("ListenerRule"), &elb2.ApplicationListenerRuleProps{
+		Priority: jsii.Number(2),
+		Action:   elb2.ListenerAction_Forward(&[]elb2.IApplicationTargetGroup{tg}, &elb2.ForwardOptions{}),
 		Conditions: &[]elb2.ListenerCondition{
-			elb2.ListenerCondition_HostHeaders(jsii.Strings(props.Host)),
-			elb2.ListenerCondition_PathPatterns(jsii.Strings(props.RoutePath)),
+			elb2.ListenerCondition_HostHeaders(jsii.Strings("nginx.dynamostack.com")),
+			elb2.ListenerCondition_PathPatterns(jsii.Strings("/*")),
 		},
-		Listener: elb2.ApplicationListener_FromApplicationListenerAttributes(this, jsii.String("ALBListener"), &elb2.ApplicationListenerAttributes{
-			ListenerArn:   jsii.String(props.LoadBalancerListenerArn),
-			SecurityGroup: ec2.SecurityGroup_FromLookupById(this, jsii.String("ALBSecurityGroup"), jsii.String(props.LoadBalancerSecurityGroupName)),
+		Listener: elb2.ApplicationListener_FromApplicationListenerAttributes(this, jsii.String("LookUpListener"), &elb2.ApplicationListenerAttributes{
+			ListenerArn:   jsii.String("arn:aws:elasticloadbalancing:us-east-1:305251478828:listener/app/ClusterAlb/fbc3ee80eebe84ab/cdbbb1a8a52abce3"),
+			SecurityGroup: ec2.SecurityGroup_FromLookupById(this, jsii.String("LbSg"), jsii.String("sg-076574aabd3b41d78")),
 		}),
 	})
 
@@ -421,7 +470,7 @@ func configureContainerImage(scope constructs.Construct, registryType RegistryTy
 	if registryType == CONTAINER_DEFINITION_REGISTRY_AWS_ECR {
 		return ecs.ContainerImage_FromEcrRepository(ecr.Repository_FromRepositoryName(scope, jsii.String("EcrRepository"), jsii.String(image)), jsii.String(tag))
 	} else {
-		return ecs.ContainerImage_FromRegistry(jsii.String(image+tag), &ecs.RepositoryImageProps{})
+		return ecs.ContainerImage_FromRegistry(jsii.String(image+":"+tag), &ecs.RepositoryImageProps{})
 	}
 }
 
