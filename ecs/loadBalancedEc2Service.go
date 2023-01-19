@@ -277,7 +277,7 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		})
 	}
 
-	var cmOpts ecs.CloudMapOptions = ecs.CloudMapOptions{}
+	var cmOpts ecs.CloudMapOptions
 
 	if props.IsServiceDiscoveryEnabled {
 		cmOpts = ecs.CloudMapOptions{
