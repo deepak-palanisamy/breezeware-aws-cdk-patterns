@@ -35,14 +35,14 @@ type LoadBalancedEc2ServiceProps struct {
 }
 
 type ClusterProps struct {
-	ClusterName string
-	Vpc         VpcProps
+	ClusterName    string
+	Vpc            VpcProps
+	SecurityGroups []ec2.ISecurityGroup
 }
 
 type VpcProps struct {
-	Id             string
-	IsDefault      bool
-	SecurityGroups []ec2.ISecurityGroup
+	Id        string
+	IsDefault bool
 }
 
 type TaskDefinition struct {
@@ -64,18 +64,28 @@ type (
 )
 
 const (
-	TASK_DEFINTION_NETWORK_MODE_BRIDGE    Networkmode                  = "BRIDGE"
-	TASK_DEFINTION_NETWORK_MODE_AWS_VPC   Networkmode                  = "AWS_VPC"
-	DEFAULT_TASK_DEFINITION_NETWORK_MODE  ecs.NetworkMode              = ecs.NetworkMode_BRIDGE
-	CONTAINER_DEFINITION_REGISTRY_AWS_ECR RegistryType                 = "ECR"
-	CONTAINER_DEFINITION_REGISTRY_OTHERS  RegistryType                 = "OTHERS"
-	DEFAULT_LOG_RETENTION                 cloudwatchlogs.RetentionDays = cloudwatchlogs.RetentionDays_TWO_WEEKS
-	DEFAULT_DOCKER_VOLUME_DRIVER          string                       = "rexray/ebs"
-	DEFAULT_DOCKER_VOLUME_TYPE            string                       = "gp2"
-	LOAD_BALANCER_TARGET_PROTOCOL_TCP     LoadBalancerTargetProtocol   = "TCP"
-	LOAD_BALANCER_TARGET_PROTOCOL_UDP     LoadBalancerTargetProtocol   = "UDP"
-	DEFAULT_LOAD_BALANCER_TARGET_PROTOCOL ecs.Protocol                 = ecs.Protocol_TCP
-	OTEL_CONTAINER_IMAGE                  string                       = "amazon/aws-otel-collector:v0.25.0"
+	DEFAULT_LOG_RETENTION        cloudwatchlogs.RetentionDays = cloudwatchlogs.RetentionDays_TWO_WEEKS
+	DEFAULT_DOCKER_VOLUME_DRIVER string                       = "rexray/ebs"
+	DEFAULT_DOCKER_VOLUME_TYPE   string                       = "gp2"
+	OTEL_CONTAINER_IMAGE         string                       = "amazon/aws-otel-collector:v0.25.0"
+)
+
+const (
+	TASK_DEFINTION_NETWORK_MODE_BRIDGE   Networkmode     = "BRIDGE"
+	TASK_DEFINTION_NETWORK_MODE_AWS_VPC  Networkmode     = "AWS_VPC"
+	DEFAULT_TASK_DEFINITION_NETWORK_MODE ecs.NetworkMode = ecs.NetworkMode_BRIDGE
+)
+
+const (
+	CONTAINER_DEFINITION_REGISTRY_AWS_ECR RegistryType = "ECR"
+	CONTAINER_DEFINITION_REGISTRY_OTHERS  RegistryType = "OTHERS"
+	DEFAULT_CONTAINER_DEFINITION_REGISTRY RegistryType = CONTAINER_DEFINITION_REGISTRY_AWS_ECR
+)
+
+const (
+	LOAD_BALANCER_TARGET_PROTOCOL_TCP     LoadBalancerTargetProtocol = "TCP"
+	LOAD_BALANCER_TARGET_PROTOCOL_UDP     LoadBalancerTargetProtocol = "UDP"
+	DEFAULT_LOAD_BALANCER_TARGET_PROTOCOL ecs.Protocol               = ecs.Protocol_TCP
 )
 
 type ContainerDefinition struct {
@@ -288,7 +298,7 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		Cluster: ecs.Cluster_FromClusterAttributes(this, jsii.String("Cluster"), &ecs.ClusterAttributes{
 			ClusterName:    jsii.String(props.Cluster.ClusterName),
 			Vpc:            vpc,
-			SecurityGroups: &props.Cluster.Vpc.SecurityGroups,
+			SecurityGroups: &props.Cluster.SecurityGroups,
 		}),
 		CapacityProviderStrategies: &capacityProviderStrategies,
 		TaskDefinition:             taskDef,
