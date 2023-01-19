@@ -277,16 +277,6 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		})
 	}
 
-	var cmOpts ecs.CloudMapOptions = ecs.CloudMapOptions{}
-
-	if props.IsServiceDiscoveryEnabled {
-		cmOpts = ecs.CloudMapOptions{
-			DnsTtl:            awscdk.Duration_Minutes(jsii.Number(1)),
-			DnsRecordType:     servicediscovery.DnsRecordType_A,
-			CloudMapNamespace: getCloudMapNamespaceService(this, props.ServiceDiscovery),
-		}
-	}
-
 	var capacityProviderStrategies []*ecs.CapacityProviderStrategy = []*ecs.CapacityProviderStrategy{}
 	for _, cps := range props.CapacityProviderStrategies {
 		capacityProviderStrategy := createServiceCapacityProviderStrategy(cps)
@@ -294,6 +284,7 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 	}
 
 	vpc := lookupVpc(this, id, &props.Cluster.Vpc)
+	var cmOpts ecs.CloudMapOptions = ecs.CloudMapOptions{}
 	ec2Service := ecs.NewEc2Service(this, jsii.String("Ec2Service"), &ecs.Ec2ServiceProps{
 		Cluster: ecs.Cluster_FromClusterAttributes(this, jsii.String("Cluster"), &ecs.ClusterAttributes{
 			ClusterName:    jsii.String(props.Cluster.ClusterName),
@@ -313,6 +304,15 @@ func NewLoadBalancedEc2Service(scope constructs.Construct, id *string, props *Lo
 		PropagateTags:        ecs.PropagatedTagSource_SERVICE,
 		EnableECSManagedTags: jsii.Bool(true),
 	})
+
+	if props.IsServiceDiscoveryEnabled {
+		cmOpts = ecs.CloudMapOptions{
+			DnsTtl:            awscdk.Duration_Minutes(jsii.Number(1)),
+			DnsRecordType:     servicediscovery.DnsRecordType_A,
+			CloudMapNamespace: getCloudMapNamespaceService(this, props.ServiceDiscovery),
+		}
+		ec2Service.EnableCloudMap(&cmOpts)
+	}
 
 	var serviceTargets []elb2.IApplicationLoadBalancerTarget = []elb2.IApplicationLoadBalancerTarget{}
 
